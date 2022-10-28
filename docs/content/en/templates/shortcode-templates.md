@@ -303,7 +303,7 @@ The rendered output of the HTML example code block will be as follows:
 
 ### Nested Shortcode: Image Gallery
 
-Hugo's [`.Parent` shortcode variable][parent] returns a boolean value depending on whether the shortcode in question is called within the context of a *parent* shortcode. This provides an inheritance model for common shortcode parameters.
+Hugo's [`.Parent` shortcode variable][parent] provides access to the parent shortcode context when the shortcode in question is called within the context of a *parent* shortcode. This provides an inheritance model for common shortcode parameters.
 
 The following example is contrived but demonstrates the concept. Assume you have a `gallery` shortcode that expects one named `class` parameter:
 
@@ -369,7 +369,7 @@ More shortcode examples can be found in the [shortcodes directory for spf13.com]
 
 ## Inline Shortcodes
 
-{{< new-in "0.52.0" >}}
+{{< new-in "0.52" >}}
 
 Since Hugo 0.52, you can implement your shortcodes inline -- e.g. where you use them in the content file. This can be useful for scripting that you only need in one place.
 

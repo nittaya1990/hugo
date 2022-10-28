@@ -14,7 +14,6 @@
 package hugolib
 
 import (
-	"github.com/gohugoio/hugo/markup/converter"
 	"github.com/gohugoio/hugo/output"
 	"github.com/gohugoio/hugo/resources/page"
 	"github.com/gohugoio/hugo/resources/resource"
@@ -59,6 +58,7 @@ func newPageOutput(
 		pagePerOutputProviders:  providers,
 		ContentProvider:         page.NopPage,
 		TableOfContentsProvider: page.NopPage,
+		PageRenderProvider:      page.NopPage,
 		render:                  render,
 		paginator:               pag,
 	}
@@ -81,77 +81,26 @@ type pageOutput struct {
 
 	// These interface provides the functionality that is specific for this
 	// output format.
+	contentRenderer page.ContentRenderer
 	pagePerOutputProviders
 	page.ContentProvider
 	page.TableOfContentsProvider
+	page.PageRenderProvider
 
 	// May be nil.
 	cp *pageContentOutput
-}
-
-func (o *pageOutput) initRenderHooks() error {
-	if o.cp == nil {
-		return nil
-	}
-
-	var initErr error
-
-	o.cp.renderHooks.init.Do(func() {
-		ps := o.cp.p
-
-		c := ps.getContentConverter()
-		if c == nil || !c.Supports(converter.FeatureRenderHooks) {
-			return
-		}
-
-		h, err := ps.createRenderHooks(o.f)
-		if err != nil {
-			initErr = err
-			return
-		}
-		o.cp.renderHooks.hooks = h
-
-		if !o.cp.renderHooksHaveVariants || h.IsZero() {
-			// Check if there is a different render hooks template
-			// for any of the other page output formats.
-			// If not, we can reuse this.
-			for _, po := range ps.pageOutputs {
-				if po.f.Name != o.f.Name {
-					h2, err := ps.createRenderHooks(po.f)
-					if err != nil {
-						initErr = err
-						return
-					}
-
-					if h2.IsZero() {
-						continue
-					}
-
-					if o.cp.renderHooks.hooks.IsZero() {
-						o.cp.renderHooks.hooks = h2
-					}
-
-					o.cp.renderHooksHaveVariants = !h2.Eq(o.cp.renderHooks.hooks)
-
-					if o.cp.renderHooksHaveVariants {
-						break
-					}
-
-				}
-			}
-		}
-	})
-
-	return initErr
 }
 
 func (p *pageOutput) initContentProvider(cp *pageContentOutput) {
 	if cp == nil {
 		return
 	}
+	p.contentRenderer = cp
 	p.ContentProvider = cp
 	p.TableOfContentsProvider = cp
+	p.PageRenderProvider = cp
 	p.cp = cp
+
 }
 
 func (p *pageOutput) enablePlaceholders() {

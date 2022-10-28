@@ -23,12 +23,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gohugoio/hugo/hugofs/glob"
+
 	"github.com/gohugoio/hugo/hugofs/files"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/pkg/errors"
+	"errors"
 
 	"github.com/gohugoio/hugo/common/hreflect"
+	"github.com/gohugoio/hugo/common/htime"
 
 	"github.com/spf13/afero"
 )
@@ -58,10 +61,10 @@ type FileMeta struct {
 	Module     string
 
 	Weight     int
-	Ordinal    int
 	IsOrdered  bool
 	IsSymlink  bool
 	IsRootFile bool
+	IsProject  bool
 	Watch      bool
 
 	Classifier files.ContentClass
@@ -76,6 +79,9 @@ type FileMeta struct {
 	Fs           afero.Fs
 	OpenFunc     func() (afero.File, error)
 	JoinStatFunc func(name string) (FileMetaInfo, error)
+
+	// Include only files or directories that match.
+	InclusionFilter *glob.FilenameFilter
 }
 
 func (m *FileMeta) Copy() *FileMeta {
@@ -95,9 +101,16 @@ func (m *FileMeta) Merge(from *FileMeta) {
 
 	for i := 0; i < dstv.NumField(); i++ {
 		v := dstv.Field(i)
+		if !v.CanSet() {
+			continue
+		}
 		if !hreflect.IsTruthfulValue(v) {
 			v.Set(srcv.Field(i))
 		}
+	}
+
+	if m.InclusionFilter == nil {
+		m.InclusionFilter = from.InclusionFilter
 	}
 }
 
@@ -124,6 +137,17 @@ type fileInfoMeta struct {
 	os.FileInfo
 
 	m *FileMeta
+}
+
+type filenameProvider interface {
+	Filename() string
+}
+
+var _ filenameProvider = (*fileInfoMeta)(nil)
+
+// Filename returns the full filename.
+func (fi *fileInfoMeta) Filename() string {
+	return fi.m.Filename
 }
 
 // Name returns the file's name. Note that we follow symlinks,
@@ -175,7 +199,7 @@ func (fi *dirNameOnlyFileInfo) IsDir() bool {
 	return true
 }
 
-func (fi *dirNameOnlyFileInfo) Sys() interface{} {
+func (fi *dirNameOnlyFileInfo) Sys() any {
 	return nil
 }
 
@@ -191,7 +215,7 @@ func newDirNameOnlyFileInfo(name string, meta *FileMeta, fileOpener func() (afer
 	m.IsOrdered = false
 
 	return NewFileMetaInfo(
-		&dirNameOnlyFileInfo{name: base, modTime: time.Now()},
+		&dirNameOnlyFileInfo{name: base, modTime: htime.Now()},
 		m,
 	)
 }

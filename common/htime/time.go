@@ -17,9 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bep/clock"
 	"github.com/spf13/cast"
-
-	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/gohugoio/locales"
 )
@@ -74,6 +73,8 @@ var (
 		"November",
 		"December",
 	}
+
+	Clock = clock.System()
 )
 
 func NewTimeFormatter(ltr locales.Translator) TimeFormatter {
@@ -123,19 +124,42 @@ func (f TimeFormatter) Format(t time.Time, layout string) string {
 	dayIdx := t.Weekday()
 
 	s = strings.ReplaceAll(s, longMonthNames[monthIdx], f.ltr.MonthWide(t.Month()))
-	s = strings.ReplaceAll(s, shortMonthNames[monthIdx], f.ltr.MonthAbbreviated(t.Month()))
+	if !strings.Contains(s, f.ltr.MonthWide(t.Month())) {
+		s = strings.ReplaceAll(s, shortMonthNames[monthIdx], f.ltr.MonthAbbreviated(t.Month()))
+	}
 	s = strings.ReplaceAll(s, longDayNames[dayIdx], f.ltr.WeekdayWide(t.Weekday()))
-	s = strings.ReplaceAll(s, shortDayNames[dayIdx], f.ltr.WeekdayAbbreviated(t.Weekday()))
+	if !strings.Contains(s, f.ltr.WeekdayWide(t.Weekday())) {
+		s = strings.ReplaceAll(s, shortDayNames[dayIdx], f.ltr.WeekdayAbbreviated(t.Weekday()))
+	}
 
 	return s
 }
 
-func ToTimeInDefaultLocationE(i interface{}, location *time.Location) (tim time.Time, err error) {
+func ToTimeInDefaultLocationE(i any, location *time.Location) (tim time.Time, err error) {
 	switch vv := i.(type) {
-	case toml.LocalDate:
+	case AsTimeProvider:
 		return vv.AsTime(location), nil
-	case toml.LocalDateTime:
-		return vv.AsTime(location), nil
+	// issue #8895
+	// datetimes parsed by `go-toml` have empty zone name
+	// convert back them into string and use `cast`
+	// TODO(bep) add tests, make sure we really need this.
+	case time.Time:
+		i = vv.Format(time.RFC3339)
 	}
 	return cast.ToTimeInDefaultLocationE(i, location)
+}
+
+// Now returns time.Now() or time value based on the `clock` flag.
+// Use this function to fake time inside hugo.
+func Now() time.Time {
+	return Clock.Now()
+}
+
+func Since(t time.Time) time.Duration {
+	return Clock.Since(t)
+}
+
+// AsTimeProvider is implemented by go-toml's LocalDate and LocalDateTime.
+type AsTimeProvider interface {
+	AsTime(zone *time.Location) time.Time
 }

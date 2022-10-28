@@ -14,6 +14,7 @@
 package source
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,8 +22,6 @@ import (
 	"github.com/gohugoio/hugo/common/paths"
 
 	"github.com/gohugoio/hugo/hugofs/files"
-
-	"github.com/pkg/errors"
 
 	"github.com/gohugoio/hugo/common/hugio"
 
@@ -70,11 +69,12 @@ type FileWithoutOverlap interface {
 	// The directory is relative to the content root.
 	Dir() string
 
-	// Extension gets the file extension, i.e "myblogpost.md" will return "md".
+	// Extension is an alias to Ext().
+	// Deprecated: Use Ext instead.
 	Extension() string
 
-	// Ext is an alias for Extension.
-	Ext() string // Hmm... Deprecate Extension
+	// Ext gets the file extension, i.e "myblogpost.md" will return "md".
+	Ext() string
 
 	// LogicalName is filename and extension of the file.
 	LogicalName() string
@@ -120,7 +120,7 @@ type FileInfo struct {
 	translationBaseName string
 	contentBaseName     string
 	section             string
-	isLeafBundle        bool
+	classifier          files.ContentClass
 
 	uniqueID string
 
@@ -139,7 +139,10 @@ func (fi *FileInfo) Path() string { return fi.relPath }
 func (fi *FileInfo) Dir() string { return fi.relDir }
 
 // Extension is an alias to Ext().
-func (fi *FileInfo) Extension() string { return fi.Ext() }
+func (fi *FileInfo) Extension() string {
+	helpers.Deprecated(".File.Extension", "Use .File.Ext instead. ", false)
+	return fi.Ext()
+}
 
 // Ext returns a file's extension without the leading period (ie. "md").
 func (fi *FileInfo) Ext() string { return fi.ext }
@@ -199,12 +202,12 @@ func (fi *FileInfo) init() {
 		relDir := strings.Trim(fi.relDir, helpers.FilePathSeparator)
 		parts := strings.Split(relDir, helpers.FilePathSeparator)
 		var section string
-		if (!fi.isLeafBundle && len(parts) == 1) || len(parts) > 1 {
+		if (fi.classifier != files.ContentClassLeaf && len(parts) == 1) || len(parts) > 1 {
 			section = parts[0]
 		}
 		fi.section = section
 
-		if fi.isLeafBundle && len(parts) > 0 {
+		if fi.classifier.IsBundle() && len(parts) > 0 {
 			fi.contentBaseName = parts[len(parts)-1]
 		} else {
 			fi.contentBaseName = fi.translationBaseName
@@ -238,14 +241,13 @@ func (sp *SourceSpec) NewFileInfo(fi hugofs.FileMetaInfo) (*FileInfo, error) {
 
 	filename := m.Filename
 	relPath := m.Path
-	isLeafBundle := m.Classifier == files.ContentClassLeaf
 
 	if relPath == "" {
-		return nil, errors.Errorf("no Path provided by %v (%T)", m, m.Fs)
+		return nil, fmt.Errorf("no Path provided by %v (%T)", m, m.Fs)
 	}
 
 	if filename == "" {
-		return nil, errors.Errorf("no Filename provided by %v (%T)", m, m.Fs)
+		return nil, fmt.Errorf("no Filename provided by %v (%T)", m, m.Fs)
 	}
 
 	relDir := filepath.Dir(relPath)
@@ -287,7 +289,7 @@ func (sp *SourceSpec) NewFileInfo(fi hugofs.FileMetaInfo) (*FileInfo, error) {
 		name:                name,
 		baseName:            baseName, // BaseFileName()
 		translationBaseName: translationBaseName,
-		isLeafBundle:        isLeafBundle,
+		classifier:          m.Classifier,
 	}
 
 	return f, nil

@@ -30,15 +30,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gohugoio/hugo/hugofs/files"
+	"github.com/gohugoio/hugo/tpl"
+
+	"github.com/gohugoio/hugo/common/herrors"
+	"github.com/gohugoio/hugo/common/htime"
 	"github.com/gohugoio/hugo/common/types"
 
 	"github.com/gohugoio/hugo/hugofs"
 
 	"github.com/gohugoio/hugo/resources/page"
 
-	"github.com/pkg/errors"
-
-	"github.com/gohugoio/hugo/common/herrors"
 	"github.com/gohugoio/hugo/common/hugo"
 	"github.com/gohugoio/hugo/common/loggers"
 	"github.com/gohugoio/hugo/common/terminal"
@@ -125,6 +127,12 @@ func initializeConfig(mustHaveConfigFile, failOnInitErr, running bool,
 		return nil, err
 	}
 
+	if h := c.hugoTry(); h != nil {
+		for _, s := range h.Sites {
+			s.RegisterMediaTypes()
+		}
+	}
+
 	return c, nil
 }
 
@@ -187,6 +195,7 @@ func initializeFlags(cmd *cobra.Command, cfg config.Provider) {
 		"buildDrafts",
 		"buildFuture",
 		"buildExpired",
+		"clock",
 		"uglyURLs",
 		"canonifyURLs",
 		"enableRobotsTXT",
@@ -197,7 +206,7 @@ func initializeFlags(cmd *cobra.Command, cfg config.Provider) {
 		"forceSyncStatic",
 		"noTimes",
 		"noChmod",
-		"ignoreVendor",
+		"noBuildLock",
 		"ignoreVendorPaths",
 		"templateMetrics",
 		"templateMetricsHints",
@@ -215,7 +224,8 @@ func initializeFlags(cmd *cobra.Command, cfg config.Provider) {
 		"dryRun",
 		"force",
 		"gc",
-		"i18n-warnings",
+		"printI18nWarnings",
+		"printUnusedTemplates",
 		"invalidateCDN",
 		"layoutDir",
 		"logFile",
@@ -242,8 +252,8 @@ func initializeFlags(cmd *cobra.Command, cfg config.Provider) {
 
 	// Set some "config aliases"
 	setValueFromFlag(cmd.Flags(), "destination", cfg, "publishDir", false)
-	setValueFromFlag(cmd.Flags(), "i18n-warnings", cfg, "logI18nWarnings", false)
-	setValueFromFlag(cmd.Flags(), "path-warnings", cfg, "logPathWarnings", false)
+	setValueFromFlag(cmd.Flags(), "printI18nWarnings", cfg, "logI18nWarnings", false)
+	setValueFromFlag(cmd.Flags(), "printPathWarnings", cfg, "logPathWarnings", false)
 }
 
 func setValueFromFlag(flags *flag.FlagSet, key string, cfg config.Provider, targetKey string, force bool) {
@@ -274,11 +284,7 @@ func setValueFromFlag(flags *flag.FlagSet, key string, cfg config.Provider, targ
 	}
 }
 
-func isTerminal() bool {
-	return terminal.IsTerminal(os.Stdout)
-}
-
-func (c *commandeer) fullBuild() error {
+func (c *commandeer) fullBuild(noBuildLock bool) error {
 	var (
 		g         errgroup.Group
 		langCount map[string]uint64
@@ -287,7 +293,7 @@ func (c *commandeer) fullBuild() error {
 	if !c.h.quiet {
 		fmt.Println("Start building sites … ")
 		fmt.Println(hugo.BuildVersionString())
-		if isTerminal() {
+		if terminal.IsTerminal(os.Stdout) {
 			defer func() {
 				fmt.Print(showCursor + clearLine)
 			}()
@@ -297,14 +303,14 @@ func (c *commandeer) fullBuild() error {
 	copyStaticFunc := func() error {
 		cnt, err := c.copyStatic()
 		if err != nil {
-			return errors.Wrap(err, "Error copying static files")
+			return fmt.Errorf("Error copying static files: %w", err)
 		}
 		langCount = cnt
 		return nil
 	}
 	buildSitesFunc := func() error {
-		if err := c.buildSites(); err != nil {
-			return errors.Wrap(err, "Error building site")
+		if err := c.buildSites(noBuildLock); err != nil {
+			return fmt.Errorf("Error building site: %w", err)
 		}
 		return nil
 	}
@@ -351,10 +357,10 @@ func (c *commandeer) initCPUProfile() (func(), error) {
 
 	f, err := os.Create(c.h.cpuprofile)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create CPU profile")
+		return nil, fmt.Errorf("failed to create CPU profile: %w", err)
 	}
 	if err := pprof.StartCPUProfile(f); err != nil {
-		return nil, errors.Wrap(err, "failed to start CPU profile")
+		return nil, fmt.Errorf("failed to start CPU profile: %w", err)
 	}
 	return func() {
 		pprof.StopCPUProfile()
@@ -385,11 +391,11 @@ func (c *commandeer) initTraceProfile() (func(), error) {
 
 	f, err := os.Create(c.h.traceprofile)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create trace file")
+		return nil, fmt.Errorf("failed to create trace file: %w", err)
 	}
 
 	if err := trace.Start(f); err != nil {
-		return nil, errors.Wrap(err, "failed to start trace")
+		return nil, fmt.Errorf("failed to start trace: %w", err)
 	}
 
 	return func() {
@@ -496,21 +502,28 @@ func (c *commandeer) build() error {
 		}
 	}()
 
-	if err := c.fullBuild(); err != nil {
+	if err := c.fullBuild(false); err != nil {
 		return err
 	}
 
-	// TODO(bep) Feedback?
 	if !c.h.quiet {
 		fmt.Println()
 		c.hugo().PrintProcessingStats(os.Stdout)
 		fmt.Println()
 
-		if createCounter, ok := c.destinationFs.(hugofs.DuplicatesReporter); ok {
-			dupes := createCounter.ReportDuplicates()
-			if dupes != "" {
-				c.logger.Warnln("Duplicate target paths:", dupes)
+		hugofs.WalkFilesystems(c.publishDirFs, func(fs afero.Fs) bool {
+			if dfs, ok := fs.(hugofs.DuplicatesReporter); ok {
+				dupes := dfs.ReportDuplicates()
+				if dupes != "" {
+					c.logger.Warnln("Duplicate target paths:", dupes)
+				}
 			}
+			return false
+		})
+
+		unusedTemplates := c.hugo().Tmpl().(tpl.UnusedTemplatesProvider).UnusedTemplates()
+		for _, unusedTemplate := range unusedTemplates {
+			c.logger.Warnf("Template %s is unused, source file %s", unusedTemplate.Name(), unusedTemplate.Filename())
 		}
 	}
 
@@ -539,7 +552,6 @@ func (c *commandeer) build() error {
 }
 
 func (c *commandeer) serverBuild() error {
-
 	stopProfiling, err := c.initProfiling()
 	if err != nil {
 		return err
@@ -551,7 +563,7 @@ func (c *commandeer) serverBuild() error {
 		}
 	}()
 
-	if err := c.fullBuild(); err != nil {
+	if err := c.fullBuild(false); err != nil {
 		return err
 	}
 
@@ -628,11 +640,7 @@ func chmodFilter(dst, src os.FileInfo) bool {
 }
 
 func (c *commandeer) copyStaticTo(sourceFs *filesystems.SourceFilesystem) (uint64, error) {
-	publishDir := c.hugo().PathSpec.PublishDir
-	// If root, remove the second '/'
-	if publishDir == "//" {
-		publishDir = helpers.FilePathSeparator
-	}
+	publishDir := helpers.FilePathSeparator
 
 	if sourceFs.PublishFolder != "" {
 		publishDir = filepath.Join(publishDir, sourceFs.PublishFolder)
@@ -645,7 +653,7 @@ func (c *commandeer) copyStaticTo(sourceFs *filesystems.SourceFilesystem) (uint6
 	syncer.NoChmod = c.Cfg.GetBool("noChmod")
 	syncer.ChmodFilter = chmodFilter
 	syncer.SrcFs = fs
-	syncer.DestFs = c.Fs.Destination
+	syncer.DestFs = c.Fs.PublishDirStatic
 	// Now that we are using a unionFs for the static directories
 	// We can effectively clean the publishDir on initial sync
 	syncer.Delete = c.Cfg.GetBool("cleanDestinationDir")
@@ -677,6 +685,10 @@ func (c *commandeer) firstPathSpec() *helpers.PathSpec {
 }
 
 func (c *commandeer) timeTrack(start time.Time, name string) {
+	// Note the use of time.Since here and time.Now in the callers.
+	// We have a htime.Sinnce, but that may be adjusted to the future,
+	// and that does not make sense here, esp. when used before the
+	// global Clock is initialized.
 	elapsed := time.Since(start)
 	c.logger.Printf("%s in %v ms", name, int(1000*elapsed.Seconds()))
 }
@@ -721,22 +733,22 @@ func (c *commandeer) getDirList() ([]string, error) {
 	return filenames, nil
 }
 
-func (c *commandeer) buildSites() (err error) {
-	return c.hugo().Build(hugolib.BuildCfg{})
+func (c *commandeer) buildSites(noBuildLock bool) (err error) {
+	return c.hugo().Build(hugolib.BuildCfg{NoBuildLock: noBuildLock})
 }
 
 func (c *commandeer) handleBuildErr(err error, msg string) {
 	c.buildErr = err
-
-	c.logger.Errorln(msg + ":\n")
-	c.logger.Errorln(helpers.FirstUpper(err.Error()))
-	if !c.h.quiet && c.h.verbose {
-		herrors.PrintStackTraceFromErr(err)
-	}
+	c.logger.Errorln(msg + ": " + cleanErrorLog(err.Error()))
 }
 
 func (c *commandeer) rebuildSites(events []fsnotify.Event) error {
-
+	if c.buildErr != nil {
+		ferrs := herrors.UnwrapFileErrorsWithErrorContext(c.buildErr)
+		for _, err := range ferrs {
+			events = append(events, fsnotify.Event{Name: err.Position().Filename, Op: fsnotify.Write})
+		}
+	}
 	c.buildErr = nil
 	visited := c.visitedURLs.PeekAllSet()
 	if c.fastRenderMode {
@@ -750,7 +762,7 @@ func (c *commandeer) rebuildSites(events []fsnotify.Event) error {
 			visited[home] = true
 		}
 	}
-	return c.hugo().Build(hugolib.BuildCfg{RecentlyVisited: visited, ErrRecovery: c.wasError}, events...)
+	return c.hugo().Build(hugolib.BuildCfg{NoBuildLock: true, RecentlyVisited: visited, ErrRecovery: c.wasError}, events...)
 }
 
 func (c *commandeer) partialReRender(urls ...string) error {
@@ -762,7 +774,9 @@ func (c *commandeer) partialReRender(urls ...string) error {
 	for _, url := range urls {
 		visited[url] = true
 	}
-	return c.hugo().Build(hugolib.BuildCfg{RecentlyVisited: visited, PartialReRender: true, ErrRecovery: c.wasError})
+
+	// Note: We do not set NoBuildLock as the file lock is not acquired at this stage.
+	return c.hugo().Build(hugolib.BuildCfg{NoBuildLock: false, RecentlyVisited: visited, PartialReRender: true, ErrRecovery: c.wasError})
 }
 
 func (c *commandeer) fullRebuild(changeType string) {
@@ -809,7 +823,7 @@ func (c *commandeer) fullRebuild(changeType string) {
 				return
 			}
 
-			err = c.buildSites()
+			err = c.buildSites(true)
 			if err != nil {
 				c.logger.Errorln(err)
 			} else if !c.h.buildWatch && !c.Cfg.GetBool("disableLiveReload") {
@@ -840,13 +854,22 @@ func (c *commandeer) newWatcher(pollIntervalStr string, dirList ...string) (*wat
 		c.logger.Printf("Use watcher with poll interval %v", pollInterval)
 	}
 
+	if pollInterval == 0 {
+		pollInterval = 500 * time.Millisecond
+	}
+
 	watcher, err := watcher.New(500*time.Millisecond, pollInterval, poll)
 	if err != nil {
 		return nil, err
 	}
 
+	spec := c.hugo().Deps.SourceSpec
+
 	for _, d := range dirList {
 		if d != "" {
+			if spec.IgnoreFile(d) {
+				continue
+			}
 			_ = watcher.Add(d)
 		}
 	}
@@ -864,13 +887,19 @@ func (c *commandeer) newWatcher(pollIntervalStr string, dirList ...string) (*wat
 		for {
 			select {
 			case evs := <-watcher.Events:
+				unlock, err := c.buildLock()
+				if err != nil {
+					c.logger.Errorln("Failed to acquire a build lock: %s", err)
+					return
+				}
 				c.handleEvents(watcher, staticSyncer, evs, configSet)
 				if c.showErrorInBrowser && c.errCount() > 0 {
 					// Need to reload browser to show the error
 					livereload.ForceRefresh()
 				}
+				unlock()
 			case err := <-watcher.Errors():
-				if err != nil {
+				if err != nil && !os.IsNotExist(err) {
 					c.logger.Errorln("Error while watching:", err)
 				}
 			}
@@ -889,7 +918,7 @@ func (c *commandeer) printChangeDetected(typ string) {
 
 	c.logger.Println(msg)
 	const layout = "2006-01-02 15:04:05.000 -0700"
-	c.logger.Println(time.Now().Format(layout))
+	c.logger.Println(htime.Now().Format(layout))
 }
 
 const (
@@ -1193,12 +1222,16 @@ func partitionDynamicEvents(sourceFs *filesystems.SourceFilesystems, events []fs
 func pickOneWriteOrCreatePath(events []fsnotify.Event) string {
 	name := ""
 
-	// Some editors (for example notepad.exe on Windows) triggers a change
-	// both for directory and file. So we pick the longest path, which should
-	// be the file itself.
 	for _, ev := range events {
-		if (ev.Op&fsnotify.Write == fsnotify.Write || ev.Op&fsnotify.Create == fsnotify.Create) && len(ev.Name) > len(name) {
-			name = ev.Name
+		if ev.Op&fsnotify.Write == fsnotify.Write || ev.Op&fsnotify.Create == fsnotify.Create {
+			if files.IsIndexContentFile(ev.Name) {
+				return ev.Name
+			}
+
+			if files.IsContentFile(ev.Name) {
+				name = ev.Name
+			}
+
 		}
 	}
 

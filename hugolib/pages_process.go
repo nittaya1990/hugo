@@ -22,7 +22,6 @@ import (
 	"github.com/gohugoio/hugo/source"
 
 	"github.com/gohugoio/hugo/hugofs/files"
-	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/gohugoio/hugo/common/herrors"
@@ -44,7 +43,7 @@ func newPagesProcessor(h *HugoSites, sp *source.SourceSpec) *pagesProcessor {
 }
 
 type pagesCollectorProcessorProvider interface {
-	Process(item interface{}) error
+	Process(item any) error
 	Start(ctx context.Context) context.Context
 	Wait() error
 }
@@ -54,7 +53,7 @@ type pagesProcessor struct {
 	procs map[string]pagesCollectorProcessorProvider
 }
 
-func (proc *pagesProcessor) Process(item interface{}) error {
+func (proc *pagesProcessor) Process(item any) error {
 	switch v := item.(type) {
 	// Page bundles mapped to their language.
 	case pageBundles:
@@ -97,7 +96,7 @@ func (proc *pagesProcessor) getProcFromFi(fi hugofs.FileMetaInfo) pagesCollector
 
 type nopPageProcessor int
 
-func (nopPageProcessor) Process(item interface{}) error {
+func (nopPageProcessor) Process(item any) error {
 	return nil
 }
 
@@ -115,17 +114,24 @@ type sitePagesProcessor struct {
 	m           *pageMap
 	errorSender herrors.ErrorSender
 
-	itemChan  chan interface{}
+	ctx       context.Context
+	itemChan  chan any
 	itemGroup *errgroup.Group
 }
 
-func (p *sitePagesProcessor) Process(item interface{}) error {
-	p.itemChan <- item
+func (p *sitePagesProcessor) Process(item any) error {
+	select {
+	case <-p.ctx.Done():
+		return nil
+	default:
+		p.itemChan <- item
+	}
 	return nil
 }
 
 func (p *sitePagesProcessor) Start(ctx context.Context) context.Context {
 	p.itemGroup, ctx = errgroup.WithContext(ctx)
+	p.ctx = ctx
 	p.itemGroup.Go(func() error {
 		for item := range p.itemChan {
 			if err := p.doProcess(item); err != nil {
@@ -146,7 +152,7 @@ func (p *sitePagesProcessor) copyFile(fim hugofs.FileMetaInfo) error {
 	meta := fim.Meta()
 	f, err := meta.Open()
 	if err != nil {
-		return errors.Wrap(err, "copyFile: failed to open")
+		return fmt.Errorf("copyFile: failed to open: %w", err)
 	}
 
 	s := p.m.s
@@ -155,10 +161,12 @@ func (p *sitePagesProcessor) copyFile(fim hugofs.FileMetaInfo) error {
 
 	defer f.Close()
 
-	return s.publish(&s.PathSpec.ProcessingStats.Files, target, f)
+	fs := s.PublishFsStatic
+
+	return s.publish(&s.PathSpec.ProcessingStats.Files, target, f, fs)
 }
 
-func (p *sitePagesProcessor) doProcess(item interface{}) error {
+func (p *sitePagesProcessor) doProcess(item any) error {
 	m := p.m
 	switch v := item.(type) {
 	case *fileinfoBundle:

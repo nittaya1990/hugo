@@ -40,7 +40,6 @@ var (
 		"mdown", "markdown", "md",
 		"asciidoc", "adoc", "ad",
 		"rest", "rst",
-		"mmark",
 		"org",
 		"pandoc", "pdc",
 	}
@@ -67,6 +66,16 @@ func init() {
 
 func IsContentFile(filename string) bool {
 	return contentFileExtensionsSet[strings.TrimPrefix(filepath.Ext(filename), ".")]
+}
+
+func IsIndexContentFile(filename string) bool {
+	if !IsContentFile(filename) {
+		return false
+	}
+
+	base := filepath.Base(filename)
+
+	return strings.HasPrefix(base, "index.") || strings.HasPrefix(base, "_index.")
 }
 
 func IsHTMLFile(filename string) bool {

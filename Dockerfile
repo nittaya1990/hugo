@@ -2,7 +2,7 @@
 # Twitter:      https://twitter.com/gohugoio
 # Website:      https://gohugo.io/
 
-FROM golang:1.16-alpine AS build
+FROM golang:1.19-alpine AS build
 
 # Optionally set HUGO_BUILD_TAGS to "extended" or "nodeploy" when building like so:
 #   docker build --build-arg HUGO_BUILD_TAGS=extended .
@@ -19,14 +19,14 @@ COPY . /go/src/github.com/gohugoio/hugo/
 
 # gcc/g++ are required to build SASS libraries for extended version
 RUN apk update && \
-    apk add --no-cache gcc g++ musl-dev && \
-    go get github.com/magefile/mage
+    apk add --no-cache gcc g++ musl-dev git && \
+    go install github.com/magefile/mage
 
 RUN mage hugo && mage install
 
 # ---
 
-FROM alpine:3.12
+FROM alpine:3.16
 
 COPY --from=build /go/bin/hugo /usr/bin/hugo
 

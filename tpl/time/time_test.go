@@ -18,6 +18,9 @@ import (
 	"testing"
 	"time"
 
+	qt "github.com/frankban/quicktest"
+
+	"github.com/gohugoio/hugo/common/htime"
 	translators "github.com/gohugoio/localescompressed"
 )
 
@@ -25,13 +28,13 @@ func TestTimeLocation(t *testing.T) {
 	t.Parallel()
 
 	loc, _ := time.LoadLocation("America/Antigua")
-	ns := New(translators.GetTranslator("en"), loc)
+	ns := New(htime.NewTimeFormatter(translators.GetTranslator("en")), loc)
 
 	for i, test := range []struct {
 		name     string
 		value    string
-		location interface{}
-		expect   interface{}
+		location any
+		expect   any
 	}{
 		{"Empty location", "2020-10-20", "", "2020-10-20 00:00:00 +0000 UTC"},
 		{"New location", "2020-10-20", nil, "2020-10-20 00:00:00 -0400 AST"},
@@ -51,7 +54,7 @@ func TestTimeLocation(t *testing.T) {
 		{"Invalid time value", "invalid-value", "", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var args []interface{}
+			var args []any
 			if test.location != nil {
 				args = append(args, test.location)
 			}
@@ -80,54 +83,73 @@ func TestTimeLocation(t *testing.T) {
 }
 
 func TestFormat(t *testing.T) {
-	t.Parallel()
+	c := qt.New(t)
 
-	ns := New(translators.GetTranslator("en"), time.UTC)
+	c.Run("UTC", func(c *qt.C) {
+		c.Parallel()
+		ns := New(htime.NewTimeFormatter(translators.GetTranslator("en")), time.UTC)
 
-	for i, test := range []struct {
-		layout string
-		value  interface{}
-		expect interface{}
-	}{
-		{"Monday, Jan 2, 2006", "2015-01-21", "Wednesday, Jan 21, 2015"},
-		{"Monday, Jan 2, 2006", time.Date(2015, time.January, 21, 0, 0, 0, 0, time.UTC), "Wednesday, Jan 21, 2015"},
-		{"This isn't a date layout string", "2015-01-21", "This isn't a date layout string"},
-		// The following test case gives either "Tuesday, Jan 20, 2015" or "Monday, Jan 19, 2015" depending on the local time zone
-		{"Monday, Jan 2, 2006", 1421733600, time.Unix(1421733600, 0).Format("Monday, Jan 2, 2006")},
-		{"Monday, Jan 2, 2006", 1421733600.123, false},
-		{time.RFC3339, time.Date(2016, time.March, 3, 4, 5, 0, 0, time.UTC), "2016-03-03T04:05:00Z"},
-		{time.RFC1123, time.Date(2016, time.March, 3, 4, 5, 0, 0, time.UTC), "Thu, 03 Mar 2016 04:05:00 UTC"},
-		{time.RFC3339, "Thu, 03 Mar 2016 04:05:00 UTC", "2016-03-03T04:05:00Z"},
-		{time.RFC1123, "2016-03-03T04:05:00Z", "Thu, 03 Mar 2016 04:05:00 UTC"},
-		// Custom layouts, as introduced in Hugo 0.87.
-		{":date_medium", "2015-01-21", "Jan 21, 2015"},
-	} {
-		result, err := ns.Format(test.layout, test.value)
-		if b, ok := test.expect.(bool); ok && !b {
-			if err == nil {
-				t.Errorf("[%d] DateFormat didn't return an expected error, got %v", i, result)
-			}
-		} else {
-			if err != nil {
-				t.Errorf("[%d] DateFormat failed: %s", i, err)
-				continue
-			}
-			if result != test.expect {
-				t.Errorf("[%d] DateFormat got %v but expected %v", i, result, test.expect)
+		for i, test := range []struct {
+			layout string
+			value  any
+			expect any
+		}{
+			{"Monday, Jan 2, 2006", "2015-01-21", "Wednesday, Jan 21, 2015"},
+			{"Monday, Jan 2, 2006", time.Date(2015, time.January, 21, 0, 0, 0, 0, time.UTC), "Wednesday, Jan 21, 2015"},
+			{"This isn't a date layout string", "2015-01-21", "This isn't a date layout string"},
+			// The following test case gives either "Tuesday, Jan 20, 2015" or "Monday, Jan 19, 2015" depending on the local time zone
+			{"Monday, Jan 2, 2006", 1421733600, time.Unix(1421733600, 0).Format("Monday, Jan 2, 2006")},
+			{"Monday, Jan 2, 2006", 1421733600.123, false},
+			{time.RFC3339, time.Date(2016, time.March, 3, 4, 5, 0, 0, time.UTC), "2016-03-03T04:05:00Z"},
+			{time.RFC1123, time.Date(2016, time.March, 3, 4, 5, 0, 0, time.UTC), "Thu, 03 Mar 2016 04:05:00 UTC"},
+			{time.RFC3339, "Thu, 03 Mar 2016 04:05:00 UTC", "2016-03-03T04:05:00Z"},
+			{time.RFC1123, "2016-03-03T04:05:00Z", "Thu, 03 Mar 2016 04:05:00 UTC"},
+			// Custom layouts, as introduced in Hugo 0.87.
+			{":date_medium", "2015-01-21", "Jan 21, 2015"},
+		} {
+			result, err := ns.Format(test.layout, test.value)
+			if b, ok := test.expect.(bool); ok && !b {
+				if err == nil {
+					c.Errorf("[%d] DateFormat didn't return an expected error, got %v", i, result)
+				}
+			} else {
+				if err != nil {
+					c.Errorf("[%d] DateFormat failed: %s", i, err)
+					continue
+				}
+				if result != test.expect {
+					c.Errorf("[%d] DateFormat got %v but expected %v", i, result, test.expect)
+				}
 			}
 		}
-	}
+	})
+
+	//Issue #9084
+	c.Run("TZ America/Los_Angeles", func(c *qt.C) {
+		c.Parallel()
+
+		loc, err := time.LoadLocation("America/Los_Angeles")
+		c.Assert(err, qt.IsNil)
+		ns := New(htime.NewTimeFormatter(translators.GetTranslator("en")), loc)
+
+		d, err := ns.Format(":time_full", "2020-03-09T11:00:00")
+
+		c.Assert(err, qt.IsNil)
+		c.Assert(d, qt.Equals, "11:00:00 am Pacific Daylight Time")
+
+	})
+
 }
 
 func TestDuration(t *testing.T) {
 	t.Parallel()
 
-	ns := New(translators.GetTranslator("en"), time.UTC)
+	ns := New(htime.NewTimeFormatter(translators.GetTranslator("en")), time.UTC)
 
 	for i, test := range []struct {
-		unit   interface{}
-		num    interface{}
-		expect interface{}
+		unit   any
+		num    any
+		expect any
 	}{
 		{"nanosecond", 10, 10 * time.Nanosecond},
 		{"ns", 10, 10 * time.Nanosecond},
